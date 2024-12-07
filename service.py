@@ -15,6 +15,9 @@ from transformers import AutoProcessor, AutoModelForCausalLM
 import openai
 from openai import OpenAI
 import os 
+import json 
+gptkey = os.getenv("OPENAI_API_KEY")
+gpt_client = OpenAI(api_key=gptkey)
 
 yolo_model = YOLO('weights/icon_detect/best.pt').to('cuda')
 processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True)
@@ -46,6 +49,35 @@ app.add_middleware(
 class ParseRequest(BaseModel):
     box_threshold: float = 0.05
     iou_threshold: float = 0.1
+    
+
+def find_bbox_from_prompt(dictionary, prompt):
+    # Chuyển dictionary thành string context
+    context = "\n".join([f"{key}: {value}" for key, value in dictionary.items()])
+    
+    # Prompt cho OpenAI
+    full_prompt = f"""
+    Context:
+    {context}
+
+    User Prompt: {prompt}
+
+    Task: Return a JSON with the bbox coordinates matching the user's request. 
+    Format: {{"bbox": [x1, y1, x2, y2]}} or {{"bbox": null}} if no match.
+    """
+    
+    response = gpt_client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are an expert at locating UI elements based on text descriptions."},
+            {"role": "user", "content": full_prompt}
+        ],
+        response_format={"type": "json_object"}
+    )
+    result = json.loads(response.choices[0].message.content)
+
+    # result = response.choices[0].message
+    return result
 
 async def parse(image, box_threshold, iou_threshold, image_save_path):
     
@@ -156,12 +188,8 @@ async def process_screen_prompt(
         for idx, icon in enumerate(parsed_content_list):
             icon_box[icon] = label_coordinates[str(idx)]
         
-        breakpoint()
-        return {
-            "labeled_image": labeled_image_base64,
-            "parsed_content": "\n".join(parsed_content_list),
-            "label_coordinates": str(label_coordinates)
-        }
+        result = find_bbox_from_prompt(icon_box, prompt)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
